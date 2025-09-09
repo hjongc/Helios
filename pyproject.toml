@@ -1,0 +1,47 @@
+[tool.poetry]
+name = "helios"
+version = "0.0.1"
+description = "Oracle-to-Spark SQL converter (LLM-assisted) with strict correctness."
+authors = ["Helios Maintainers <devnull@example.com>"]
+readme = "GUIDELINES.md"
+packages = [{ include = "helios" }]
+
+[tool.poetry.dependencies]
+python = ">=3.11,<3.12"
+openai = "^1.40.0"
+python-dotenv = "^1.0.1"
+click = "^8.1.7"
+
+[tool.poetry.group.dev.dependencies]
+black = "^24.8.0"
+isort = "^5.13.2"
+ruff = "^0.5.6"
+mypy = "^1.10.0"
+
+[tool.poetry.scripts]
+helios = "helios.cli:app"
+
+[tool.black]
+line-length = 100
+target-version = ["py311"]
+
+[tool.isort]
+profile = "black"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.mypy]
+python_version = "3.11"
+warn_unused_ignores = true
+ignore_missing_imports = true
+disallow_untyped_defs = false
+check_untyped_defs = false
+no_implicit_optional = false
+
+[build-system]
+requires = ["poetry-core>=1.8.0"]
+build-backend = "poetry.core.masonry.api"
+
+

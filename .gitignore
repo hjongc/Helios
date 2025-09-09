@@ -1,0 +1,57 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage
+.coverage
+htmlcov/
+.tox/
+.pytest_cache/
+coverage.xml
+
+# Type checker / linters caches
+.mypy_cache/
+.ruff_cache/
+
+# Environments
+.venv/
+venv/
+.env
+.env.*
+.envrc
+
+# IDE/editor
+.vscode/
+.idea/
+*.swp
+*~
+
+# Logs
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Node (if present)
+node_modules/
+
+# Helios generated outputs
+*_helios.sql
+
+# Helios internal guidance (not for VCS)
+GUIDELINES.md
+.cursorrules
+# Optional future local Cursor files/directories
+.cursor/
