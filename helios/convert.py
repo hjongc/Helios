@@ -13,6 +13,7 @@ from .rules import (
     annotate_failure,
     try_merge_to_insert_overwrite,
     transform_merge_to_insert_overwrite,
+    transform_old_outer_join_simple,
 )
 from .llm import convert_oracle_to_spark_sql, LLMUnavailable
 
@@ -93,7 +94,9 @@ def convert_path(path_str: str, use_llm: bool = True, provider: str = "hive") ->
             out_lines.append(annotate_failure("UNSUPPORTED_DML_FOR_HIVE", f"stmt_{idx}"))
             continue
 
-        # Plain statement: use rules result
+        # Plain SELECT/INSERT etc.: normalize old-style outer joins if present
+        clean = transform_old_outer_join_simple(clean)
+
         out_lines.append(clean.rstrip(";"))
         out_lines.append(";")
 

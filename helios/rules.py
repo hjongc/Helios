@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import List, Optional, Tuple
+import re
 
 
 class ConversionIssue(Exception):
@@ -647,3 +648,103 @@ def try_merge_to_insert_overwrite(stmt: str) -> Optional[str]:
         "--   SELECT <existing_columns...> FROM <target> t LEFT ANTI JOIN <source> s ON <keys>\n"
         "-- ) u;\n"
     )
+
+
+def transform_old_outer_join_simple(stmt: str) -> str:
+    """
+    Heuristic: transform WHERE-based old outer joins with (+) into explicit LEFT/RIGHT JOINs
+    for simple queries of the form:
+      SELECT ... FROM t1 a, t2 b WHERE a.col = b.col(+) AND <rest>
+    → SELECT ... FROM t1 a LEFT JOIN t2 b ON a.col = b.col WHERE <rest>
+
+    한국어 주석: 단순 패턴에서만 동작하는 보수적 변환입니다. 복잡한 경우는 그대로 둡니다.
+    """
+    up = stmt.upper()
+    if "(+)" not in up:
+        return stmt
+    # Find FROM and WHERE bounds (top-level heuristic)
+    m_from = re.search(r"\bFROM\b", up)
+    if not m_from:
+        return stmt
+    m_where = re.search(r"\bWHERE\b", up)
+    if not m_where or m_where.start() < m_from.start():
+        return stmt
+    head = stmt[: m_from.start()]
+    from_part = stmt[m_from.end() : m_where.start()]
+    where_part = stmt[m_where.end() :]
+
+    # Attempt to split tables by commas (no nested handling)
+    tables = [t.strip() for t in from_part.split(",") if t.strip()]
+    # Pattern: alias recognition "name alias" or "name"
+    alias_map: dict[str, str] = {}  # alias -> table
+    for t in tables:
+        toks = t.split()
+        if len(toks) >= 2:
+            alias_map[toks[1]] = toks[0]
+        else:
+            # table without alias: use table name as alias
+            alias_map[toks[0]] = toks[0]
+
+    # Find a single condition with (+)
+    # match forms: A.col = B.col(+)  or  A.col(+) = B.col
+    conds = re.split(r"\bAND\b", where_part, flags=re.IGNORECASE)
+    new_conds: List[str] = []
+    join_rewrites: List[Tuple[str, str, str]] = []  # (join_type, alias, on_expr)
+
+    for c in conds:
+        c_stripped = c.strip()
+        if "(+)" not in c_stripped:
+            new_conds.append(c)
+            continue
+        m1 = re.search(r"([A-Za-z_][\w]*\.[A-Za-z_][\w]*)\s*=\s*([A-Za-z_][\w]*\.[A-Za-z_][\w]*)\(\+\)", c_stripped)
+        m2 = re.search(r"([A-Za-z_][\w]*\.[A-Za-z_][\w]*)\(\+\)\s*=\s*([A-Za-z_][\w]*\.[A-Za-z_][\w]*)", c_stripped)
+        if m1:
+            left, right = m1.group(1), m1.group(2)
+            right_alias = right.split(".")[0]
+            join_rewrites.append(("LEFT", right_alias, f"{left} = {right}"))
+            # skip adding this condition to WHERE
+            continue
+        if m2:
+            left, right = m2.group(1), m2.group(2)
+            left_alias = left.split(".")[0]
+            join_rewrites.append(("RIGHT", left_alias, f"{left} = {right}"))
+            continue
+        # If not matched, keep as-is
+        new_conds.append(c)
+
+    if not join_rewrites:
+        return stmt
+
+    # Apply one rewrite (first match) conservatively
+    join_type, alias_side, on_expr = join_rewrites[0]
+    # Find the table string that contains this alias
+    target_entry_idx = None
+    for i, t in enumerate(tables):
+        toks = t.split()
+        if len(toks) >= 2 and toks[1] == alias_side:
+            target_entry_idx = i
+            break
+        if len(toks) == 1 and toks[0] == alias_side:
+            target_entry_idx = i
+            break
+    if target_entry_idx is None:
+        return stmt
+
+    # Build new FROM with join replacing the alias table
+    # Choose the left anchor as the first other table
+    anchor_idx = 0 if target_entry_idx != 0 else (1 if len(tables) > 1 else 0)
+    if len(tables) < 2:
+        return stmt
+    anchor = tables[anchor_idx]
+    right = tables[target_entry_idx]
+    remaining = [tables[i] for i in range(len(tables)) if i not in (anchor_idx, target_entry_idx)]
+    join_kw = "LEFT JOIN" if join_type == "LEFT" else "RIGHT JOIN"
+    new_from = f" {anchor} {join_kw} {right} ON {on_expr}"
+    if remaining:
+        new_from += ", " + ", ".join(remaining)
+
+    new_where = " AND ".join([c.strip() for c in new_conds if c.strip()])
+    rebuilt = head + "FROM" + new_from
+    if new_where:
+        rebuilt += " WHERE " + new_where
+    return rebuilt
