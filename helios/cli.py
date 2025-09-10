@@ -20,7 +20,15 @@ def app() -> None:
 
 @app.command(name="convert")
 @click.argument("path", type=click.Path(exists=True, dir_okay=False, file_okay=True, path_type=str))
-def convert_cmd(path: str) -> None:
+@click.option("--use-llm/--no-llm", default=True, help="LLM 보조 변환 사용 여부 (기본 사용)")
+@click.option(
+    "--provider",
+    type=click.Choice(["hive", "delta", "iceberg"], case_sensitive=False),
+    default="hive",
+    show_default=True,
+    help="타깃 테이블 포맷에 따른 변환 전략",
+)
+def convert_cmd(path: str, use_llm: bool, provider: str) -> None:
     """
     Convert a single .sql file and write <name>_helios.sql next to it.
 
@@ -28,7 +36,7 @@ def convert_cmd(path: str) -> None:
     결과는 동일 위치에 _helios 접미사로 저장됩니다.
     """
     try:
-        summary = convert_path(path)
+        summary = convert_path(path, use_llm=use_llm, provider=provider)
         click.echo(summary)
     except Exception as exc:  # noqa: BLE001 - surface errors to user
         click.echo(f"Conversion failed: {exc}", err=True)
