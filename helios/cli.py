@@ -15,6 +15,7 @@ def app() -> None:
 
     한국어 주석: Helios는 Oracle SQL(.sql 파일)을 Spark SQL로 변환합니다.
     정확성 우선 정책을 따르며, 안전하지 않은 경우 실패로 표시합니다.
+    환경변수: MYSQL_HOST, MYSQL_PORT, MYSQL_USER, MYSQL_PASSWORD, MYSQL_DATABASE, HELIOS_META_DB, HELIOS_META_TABLE
     """
 
 
@@ -30,7 +31,7 @@ def app() -> None:
 )
 @click.option(
     "--schema-resolver",
-    type=click.Choice(["auto", "cache", "spark-sql"], case_sensitive=False),
+    type=click.Choice(["auto", "cache", "spark-sql", "mysql"], case_sensitive=False),
     default="auto",
     show_default=True,
     help="스키마 조회 방법 (UPDATE 재작성에 필요)",
