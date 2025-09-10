@@ -7,8 +7,6 @@ import subprocess
 from pathlib import Path
 from typing import Dict, List, Optional
 
-import pymysql
-
 
 class SchemaResolveError(Exception):
     """한국어 주석: 스키마 조회 실패 시 사용."""
@@ -67,12 +65,14 @@ def get_columns_via_sparksql(table: str, spark_sql_bin: Optional[str] = None) ->
 
 def get_columns_via_mysql(table: str) -> Optional[List[str]]:
     """
-    Fetch columns from MySQL metadata. Supports two modes via env:
-    - Direct table lookup: HELIOS_META_DB, HELIOS_META_TABLE (columns: table_name, column_name, ordinal)
-    - Information_schema: MYSQL_HOST, MYSQL_PORT, MYSQL_USER, MYSQL_PASSWORD, MYSQL_DATABASE and parse <db.table>
-
-    한국어 주석: 사내 메타 테이블 또는 information_schema에서 컬럼 조회합니다.
+    Fetch columns from MySQL metadata using either a custom meta table or information_schema.
+    한국어 주석: 캐시/스파크 미사용 시 MySQL에서 컬럼 조회.
     """
+    try:
+        import pymysql  # type: ignore
+    except Exception:
+        return None
+
     host = os.getenv("MYSQL_HOST")
     port = int(os.getenv("MYSQL_PORT", "3306"))
     user = os.getenv("MYSQL_USER")
@@ -89,13 +89,11 @@ def get_columns_via_mysql(table: str) -> Optional[List[str]]:
         conn = pymysql.connect(host=host, port=port, user=user, password=password, database=database, charset="utf8mb4")
         with conn.cursor() as cur:
             if meta_db and meta_table:
-                # Expect a custom metadata table with (table_name, column_name, ordinal_position)
                 sql = f"SELECT column_name FROM {meta_db}.{meta_table} WHERE table_name=%s ORDER BY ordinal_position"
                 cur.execute(sql, (table,))
                 rows = cur.fetchall()
                 cols = [r[0] for r in rows]
                 return cols or None
-            # Fallback to information_schema
             if "." in table:
                 db, tb = table.split(".", 1)
             else:

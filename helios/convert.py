@@ -13,6 +13,7 @@ from .rules import (
     annotate_failure,
     try_merge_to_insert_overwrite,
     transform_merge_to_insert_overwrite,
+    transform_merge_update_only_to_insert_overwrite,
     transform_old_outer_join_simple,
     transform_delete_to_insert_overwrite,
     transform_update_to_insert_overwrite,
@@ -56,10 +57,26 @@ def convert_path(path_str: str, use_llm: bool = True, provider: str = "hive", sc
 
         # MERGE handling
         if upper.startswith("MERGE "):
+            # Try full (insert+update) rewrite
             full = transform_merge_to_insert_overwrite(clean)
             if full:
                 out_lines.append(full.rstrip("\n"))
                 continue
+            # Try update-only rewrite with resolved columns
+            import re as _re
+            m = _re.match(r"MERGE\s+INTO\s+([A-Za-z_][\w\.$]*)\b", clean, flags=_re.IGNORECASE)
+            if m:
+                table = m.group(1)
+                try:
+                    cols = resolve_table_columns(table, mode=schema_mode, cache_path=schema_cache)
+                except SchemaResolveError:
+                    cols = []
+                if cols:
+                    up_only = transform_merge_update_only_to_insert_overwrite(clean, cols)
+                    if up_only:
+                        out_lines.append(up_only.rstrip("\n"))
+                        continue
+            # Fallback: skeleton or LLM
             skeleton = try_merge_to_insert_overwrite(clean)
             if skeleton:
                 out_lines.append(skeleton.rstrip("\n"))
@@ -92,8 +109,6 @@ def convert_path(path_str: str, use_llm: bool = True, provider: str = "hive", sc
 
         # UPDATE: attempt rule rewrite with schema; fallback to LLM, else fail
         if upper.startswith("UPDATE "):
-            # resolve table and columns
-            # naive parse to get target table
             import re as _re
             m = _re.match(r"UPDATE\s+([A-Za-z_][\w\.$]*)\b", clean, flags=_re.IGNORECASE)
             columns: List[str] = []

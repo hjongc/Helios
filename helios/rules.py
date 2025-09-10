@@ -649,6 +649,45 @@ def transform_merge_to_insert_overwrite(stmt: str) -> Optional[str]:
     return final_sql
 
 
+def transform_merge_update_only_to_insert_overwrite(stmt: str, columns: List[str]) -> Optional[str]:
+    """
+    MERGE UPDATE-only (no INSERT branch) → INSERT OVERWRITE with updated + preserved rows.
+
+    한국어 주석: INSERT 없는 MERGE를 스키마 기반으로 재작성합니다.
+    """
+    comp = _parse_merge(stmt)
+    if not comp:
+        return None
+    # require update_map present
+    upd = comp.get("update_map") or {}
+    if not upd:
+        return None
+    tgt = comp["target_table"]
+    ta = comp["target_alias"]
+    srcq = comp["source_subquery"]
+    sa = comp["source_alias"]
+    on = comp["on_condition"]
+    use_left = bool(comp.get("left_join"))
+    join_kw = "LEFT JOIN" if use_left else "JOIN"
+
+    # Build updated row projection using columns
+    updated_exprs: List[str] = []
+    for c in columns:
+        expr = upd.get(c, f"{ta}.{c}")
+        updated_exprs.append(f"{expr} AS {c}")
+
+    updated_sql = (
+        f"SELECT {', '.join(updated_exprs)} FROM {tgt} {ta} {join_kw} (\n{srcq}\n) {sa} ON ({on})"
+    )
+    preserved_sql = (
+        f"SELECT {', '.join(f'{ta}.{c} AS {c}' for c in columns)} FROM {tgt} {ta} LEFT ANTI JOIN (\n{srcq}\n) {sa} ON ({on})"
+    )
+    final_sql = (
+        f"INSERT OVERWRITE TABLE {tgt}\nSELECT * FROM (\n{updated_sql}\nUNION ALL\n{preserved_sql}\n) u"
+    )
+    return final_sql
+
+
 # --- Hive-Spark MERGE skeleton (fallback) ---
 
 def try_merge_to_insert_overwrite(stmt: str) -> Optional[str]:
