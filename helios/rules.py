@@ -49,6 +49,38 @@ def drop_hints_and_normalize(stmt: str) -> str:
     return "".join(out)
 
 
+# ---------------- DELETE → INSERT OVERWRITE (conservative) ----------------
+
+def transform_delete_to_insert_overwrite(stmt: str) -> Optional[str]:
+    """
+    Rewrite simple DELETE as INSERT OVERWRITE filtering out deleted rows:
+      DELETE FROM <table> [alias] WHERE <condition>
+      → INSERT OVERWRITE TABLE <table> SELECT * FROM <table> [alias] WHERE NOT (<condition>)
+
+    한국어 주석: 단순 DELETE 패턴만 처리합니다. 복잡한 JOIN/서브쿼리는 적용하지 않습니다.
+    """
+    up = stmt.strip().upper()
+    if not up.startswith("DELETE "):
+        return None
+    # Normalize whitespace
+    s = re.sub(r"\s+", " ", stmt.strip())
+    # Match: DELETE FROM table [alias] WHERE <cond>
+    m = re.match(r"DELETE\s+FROM\s+([A-Za-z_][\w\.$]*)\s*(?:([A-Za-z_][\w]*))?\s+WHERE\s+(.*)$", s, flags=re.IGNORECASE)
+    if not m:
+        return None
+    table = m.group(1)
+    alias = m.group(2) or "t"
+    cond = m.group(3).rstrip(";").strip()
+    if not cond:
+        return None
+    # Build INSERT OVERWRITE
+    return (
+        f"INSERT OVERWRITE TABLE {table}\n"
+        f"SELECT * FROM {table} {alias}\n"
+        f"WHERE NOT ({cond})"
+    )
+
+
 # ---------------- Oracle → Spark function rewrites (safe subset) ----------------
 
 

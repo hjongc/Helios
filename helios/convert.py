@@ -14,6 +14,7 @@ from .rules import (
     try_merge_to_insert_overwrite,
     transform_merge_to_insert_overwrite,
     transform_old_outer_join_simple,
+    transform_delete_to_insert_overwrite,
 )
 from .llm import convert_oracle_to_spark_sql, LLMUnavailable
 
@@ -23,7 +24,7 @@ def convert_path(path_str: str, use_llm: bool = True, provider: str = "hive") ->
     Orchestrate conversion for a single .sql file.
 
     한국어 주석: 추출→정리→바인딩(무효)→분할→룰→(선택)LLM→출력. 
-    MERGE는 가능 시 INSERT OVERWRITE로 완전 변환, 불가 시 스켈레톤 안내. UPDATE/DELETE는 보수적으로 실패 마커.
+    MERGE는 가능 시 INSERT OVERWRITE로 완전 변환, 불가 시 스켈레톤 안내. UPDATE/DELETE는 보수적으로 대체 또는 LLM.
     """
     source_path = Path(path_str)
     if not source_path.exists() or source_path.suffix.lower() != ".sql":
@@ -71,8 +72,24 @@ def convert_path(path_str: str, use_llm: bool = True, provider: str = "hive") ->
             out_lines.append(annotate_failure("MERGE_REWRITE_NEEDED", f"stmt_{idx}"))
             continue
 
-        # UPDATE/DELETE: attempt LLM if enabled, else fail
-        if upper.startswith("UPDATE ") or upper.startswith("DELETE "):
+        # DELETE: try rule rewrite, fallback to LLM, else fail
+        if upper.startswith("DELETE "):
+            rewritten = transform_delete_to_insert_overwrite(clean)
+            if rewritten:
+                out_lines.append(rewritten.rstrip("\n"))
+                continue
+            if use_llm:
+                try:
+                    converted = convert_oracle_to_spark_sql(clean, provider=provider)
+                    out_lines.append(converted.rstrip("\n"))
+                    continue
+                except LLMUnavailable:
+                    pass
+            out_lines.append(annotate_failure("UNSUPPORTED_DML_FOR_HIVE", f"stmt_{idx}"))
+            continue
+
+        # UPDATE: LLM first (rule rewrite to be added later), else fail
+        if upper.startswith("UPDATE "):
             if use_llm:
                 try:
                     converted = convert_oracle_to_spark_sql(clean, provider=provider)
