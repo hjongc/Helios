@@ -52,19 +52,10 @@ def drop_hints_and_normalize(stmt: str) -> str:
 # ---------------- DELETE → INSERT OVERWRITE (conservative) ----------------
 
 def transform_delete_to_insert_overwrite(stmt: str) -> Optional[str]:
-    """
-    Rewrite simple DELETE as INSERT OVERWRITE filtering out deleted rows:
-      DELETE FROM <table> [alias] WHERE <condition>
-      → INSERT OVERWRITE TABLE <table> SELECT * FROM <table> [alias] WHERE NOT (<condition>)
-
-    한국어 주석: 단순 DELETE 패턴만 처리합니다. 복잡한 JOIN/서브쿼리는 적용하지 않습니다.
-    """
     up = stmt.strip().upper()
     if not up.startswith("DELETE "):
         return None
-    # Normalize whitespace
     s = re.sub(r"\s+", " ", stmt.strip())
-    # Match: DELETE FROM table [alias] WHERE <cond>
     m = re.match(r"DELETE\s+FROM\s+([A-Za-z_][\w\.$]*)\s*(?:([A-Za-z_][\w]*))?\s+WHERE\s+(.*)$", s, flags=re.IGNORECASE)
     if not m:
         return None
@@ -73,7 +64,6 @@ def transform_delete_to_insert_overwrite(stmt: str) -> Optional[str]:
     cond = m.group(3).rstrip(";").strip()
     if not cond:
         return None
-    # Build INSERT OVERWRITE
     return (
         f"INSERT OVERWRITE TABLE {table}\n"
         f"SELECT * FROM {table} {alias}\n"
@@ -82,7 +72,6 @@ def transform_delete_to_insert_overwrite(stmt: str) -> Optional[str]:
 
 
 # ---------------- Oracle → Spark function rewrites (safe subset) ----------------
-
 
 def _split_args(arg_str: str) -> List[str]:
     args: List[str] = []
@@ -93,7 +82,6 @@ def _split_args(arg_str: str) -> List[str]:
     while i < len(arg_str):
         ch = arg_str[i]
         if ch == "'":
-            # handle escaped '' inside literals
             if in_single and i + 1 < len(arg_str) and arg_str[i + 1] == "'":
                 buf.append("''")
                 i += 2
@@ -122,12 +110,6 @@ def _split_args(arg_str: str) -> List[str]:
 
 
 def _find_func_ranges(text: str, func_name_upper: str) -> List[Tuple[int, int, int, int]]:
-    """
-    Find ranges of function invocations like FUNC_NAME( ... ) in a case-insensitive manner.
-    Returns list of tuples (name_start, name_end, lparen_index, rparen_index).
-
-    한국어 주석: 함수 호출의 괄호 범위를 찾아냅니다.
-    """
     t_up = text.upper()
     res: List[Tuple[int, int, int, int]] = []
     idx = 0
@@ -136,7 +118,6 @@ def _find_func_ranges(text: str, func_name_upper: str) -> List[Tuple[int, int, i
         if n == -1:
             break
         lpar = n + len(func_name_upper)
-        # find matching right paren
         depth = 0
         in_single = False
         i = lpar
@@ -144,7 +125,6 @@ def _find_func_ranges(text: str, func_name_upper: str) -> List[Tuple[int, int, i
         while i < len(text):
             ch = text[i]
             if ch == "'":
-                # skip doubled quotes
                 if in_single and i + 1 < len(text) and text[i + 1] == "'":
                     i += 2
                     continue
@@ -181,9 +161,17 @@ def _replace_ranges(text: str, ranges: List[Tuple[int, int, int, int]], repls: L
 
 
 def _map_oracle_format_to_spark(fmt: str) -> Optional[str]:
-    """Map a subset of Oracle date formats to Spark formats. Return None if unsupported tokens found."""
-    # Normalize quotes are already stripped by caller
-    # Token replacements (order matters: longer first)
+    # Accept common combos directly
+    combos = {
+        "YYYYMMDD": "yyyyMMdd",
+        "YYYY-MM-DD": "yyyy-MM-dd",
+        "YYYY/MM/DD": "yyyy/MM/dd",
+        "YYYYMMDD HH24MISS": "yyyyMMdd HHmmss",
+        "YYYY-MM-DD HH24:MI:SS": "yyyy-MM-dd HH:mm:ss",
+        "YYYY/MM/DD HH24:MI:SS": "yyyy/MM/dd HH:mm:ss",
+    }
+    if fmt.upper() in combos:
+        return combos[fmt.upper()]
     mapping = [
         ("YYYY", "yyyy"),
         ("YY", "yy"),
@@ -195,10 +183,6 @@ def _map_oracle_format_to_spark(fmt: str) -> Optional[str]:
         ("DD", "dd"),
     ]
     allowed_tokens = {m[0] for m in mapping}
-    # Simple scan to validate tokens are from allowed set
-    # We'll treat letters-only runs as tokens, ignore separators
-    import re
-
     tokens = re.findall(r"[A-Z]+", fmt.upper())
     for tok in tokens:
         if tok not in allowed_tokens:
@@ -232,7 +216,6 @@ def _transform_decode(text: str) -> str:
     for name_s, name_e, lpar, rpar in ranges:
         inner = text[lpar + 1 : rpar]
         args = _split_args(inner)
-        # DECODE(expr, val1, res1, val2, res2, ..., default)
         if len(args) >= 3:
             expr = args[0]
             pairs = args[1:]
@@ -241,10 +224,17 @@ def _transform_decode(text: str) -> str:
                 default = pairs[-1]
                 pairs = pairs[:-1]
             when_parts = []
-            for i in range(0, len(pairs), 2):
+            i = 0
+            while i < len(pairs):
                 val = pairs[i]
-                res = pairs[i + 1]
-                when_parts.append(f"WHEN {expr} = {val} THEN {res}")
+                res = pairs[i + 1] if i + 1 < len(pairs) else "NULL"
+                # NULL-safe comparison
+                v = val.strip()
+                if v.upper() == "NULL":
+                    when_parts.append(f"WHEN {expr} IS NULL THEN {res}")
+                else:
+                    when_parts.append(f"WHEN {expr} = {val} THEN {res}")
+                i += 2
             case_sql = f"CASE {' '.join(when_parts)} ELSE {default} END"
             repls.append(case_sql)
         else:
@@ -295,7 +285,7 @@ def _transform_to_date(text: str) -> str:
 
 
 def _transform_trunc_date(text: str) -> str:
-    # TRUNC(date_expr) → date_trunc('DAY', date_expr)
+    # TRUNC(date_expr[, 'fmt']) → date_trunc(fmt, expr) for YEAR/MONTH/DAY
     ranges = _find_func_ranges(text, "TRUNC")
     if not ranges:
         return text
@@ -305,14 +295,23 @@ def _transform_trunc_date(text: str) -> str:
         args = _split_args(inner)
         if len(args) == 1:
             repls.append(f"date_trunc('DAY', {args[0]})")
+        elif len(args) == 2:
+            expr, fmt = args
+            f = fmt.strip().strip("'").upper()
+            if f in ("YYYY", "YEAR"):
+                repls.append(f"date_trunc('YEAR', {expr})")
+            elif f in ("MM", "MON", "MONTH"):
+                repls.append(f"date_trunc('MONTH', {expr})")
+            elif f in ("DD", "DAY"):
+                repls.append(f"date_trunc('DAY', {expr})")
+            else:
+                repls.append(text[name_s : rpar + 1])
         else:
-            # two-arg TRUNC not supported here
             repls.append(text[name_s : rpar + 1])
     return _replace_ranges(text, ranges, repls)
 
 
 def _transform_to_date_minus_n(text: str) -> str:
-    """Rewrite TO_DATE(x, fmt) - N → date_sub(TO_DATE(x, fmt), N) before other to_date rewrites."""
     t = text
     i = 0
     out: List[str] = []
@@ -323,7 +322,6 @@ def _transform_to_date_minus_n(text: str) -> str:
             out.append(t[i:])
             break
         out.append(t[i:n])
-        # find matching right paren
         lpar = n + len("TO_DATE")
         depth = 0
         in_single = False
@@ -352,7 +350,6 @@ def _transform_to_date_minus_n(text: str) -> str:
         if rpar == -1:
             out.append(t[n:])
             break
-        # look ahead for  - N
         k = rpar + 1
         while k < len(t) and t[k].isspace():
             k += 1
@@ -369,18 +366,12 @@ def _transform_to_date_minus_n(text: str) -> str:
                 out.append(f"date_sub(TO_DATE({inner}), {num})")
                 i = k
                 continue
-        # no match pattern
         out.append(t[n : rpar + 1])
         i = rpar + 1
     return "".join(out)
 
 
 def minimal_safe_rewrites(stmt: str) -> str:
-    """
-    Apply safe Oracle→Spark rewrites for common functions and date arithmetic.
-
-    한국어 주석: NVL/DECODE/TO_CHAR/TO_DATE/TRUNC/날짜연산( - N )을 보수적으로 변환합니다.
-    """
     s = stmt
     s = _transform_to_date_minus_n(s)
     s = _transform_nvl(s)
