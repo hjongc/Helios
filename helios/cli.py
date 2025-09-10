@@ -28,7 +28,21 @@ def app() -> None:
     show_default=True,
     help="타깃 테이블 포맷에 따른 변환 전략",
 )
-def convert_cmd(path: str, use_llm: bool, provider: str) -> None:
+@click.option(
+    "--schema-resolver",
+    type=click.Choice(["auto", "cache", "spark-sql"], case_sensitive=False),
+    default="auto",
+    show_default=True,
+    help="스키마 조회 방법 (UPDATE 재작성에 필요)",
+)
+@click.option(
+    "--schema-cache",
+    type=click.Path(dir_okay=False, file_okay=True, writable=True, path_type=str),
+    default="schema_cache.json",
+    show_default=True,
+    help="스키마 캐시 파일 경로",
+)
+def convert_cmd(path: str, use_llm: bool, provider: str, schema_resolver: str, schema_cache: str) -> None:
     """
     Convert a single .sql file and write <name>_helios.sql next to it.
 
@@ -36,7 +50,7 @@ def convert_cmd(path: str, use_llm: bool, provider: str) -> None:
     결과는 동일 위치에 _helios 접미사로 저장됩니다.
     """
     try:
-        summary = convert_path(path, use_llm=use_llm, provider=provider)
+        summary = convert_path(path, use_llm=use_llm, provider=provider, schema_mode=schema_resolver, schema_cache=schema_cache)
         click.echo(summary)
     except Exception as exc:  # noqa: BLE001 - surface errors to user
         click.echo(f"Conversion failed: {exc}", err=True)

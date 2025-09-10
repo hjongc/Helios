@@ -15,16 +15,18 @@ from .rules import (
     transform_merge_to_insert_overwrite,
     transform_old_outer_join_simple,
     transform_delete_to_insert_overwrite,
+    transform_update_to_insert_overwrite,
 )
 from .llm import convert_oracle_to_spark_sql, LLMUnavailable
+from .schema_resolver import resolve_table_columns, SchemaResolveError
 
 
-def convert_path(path_str: str, use_llm: bool = True, provider: str = "hive") -> str:
+def convert_path(path_str: str, use_llm: bool = True, provider: str = "hive", schema_mode: str = "auto", schema_cache: str = "schema_cache.json") -> str:
     """
     Orchestrate conversion for a single .sql file.
 
     한국어 주석: 추출→정리→바인딩(무효)→분할→룰→(선택)LLM→출력. 
-    MERGE는 가능 시 INSERT OVERWRITE로 완전 변환, 불가 시 스켈레톤 안내. UPDATE/DELETE는 보수적으로 대체 또는 LLM.
+    MERGE/DELETE/UPDATE는 가능 시 INSERT OVERWRITE로 재작성, 불가 시 LLM 보조, 최종 실패 마커.
     """
     source_path = Path(path_str)
     if not source_path.exists() or source_path.suffix.lower() != ".sql":
@@ -88,8 +90,24 @@ def convert_path(path_str: str, use_llm: bool = True, provider: str = "hive") ->
             out_lines.append(annotate_failure("UNSUPPORTED_DML_FOR_HIVE", f"stmt_{idx}"))
             continue
 
-        # UPDATE: LLM first (rule rewrite to be added later), else fail
+        # UPDATE: attempt rule rewrite with schema; fallback to LLM, else fail
         if upper.startswith("UPDATE "):
+            # resolve table and columns
+            # naive parse to get target table
+            import re as _re
+            m = _re.match(r"UPDATE\s+([A-Za-z_][\w\.$]*)\b", clean, flags=_re.IGNORECASE)
+            columns: List[str] = []
+            if m:
+                table = m.group(1)
+                try:
+                    columns = resolve_table_columns(table, mode=schema_mode, cache_path=schema_cache)
+                except SchemaResolveError:
+                    columns = []
+            if columns:
+                rewritten = transform_update_to_insert_overwrite(clean, columns)
+                if rewritten:
+                    out_lines.append(rewritten.rstrip("\n"))
+                    continue
             if use_llm:
                 try:
                     converted = convert_oracle_to_spark_sql(clean, provider=provider)

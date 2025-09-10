@@ -771,3 +771,52 @@ def transform_old_outer_join_simple(stmt: str) -> str:
     if new_where:
         rebuilt += " WHERE " + new_where
     return rebuilt
+
+
+def transform_update_to_insert_overwrite(stmt: str, columns: List[str]) -> Optional[str]:
+    """
+    Rewrite simple UPDATE as INSERT OVERWRITE using full column projection.
+    Pattern: UPDATE <table> [alias] SET col=expr(, ... ) WHERE <condition>
+
+    한국어 주석: 단순 패턴만 지원. 조인 UPDATE는 미지원(추후 확장).
+    """
+    up = stmt.strip().upper()
+    if not up.startswith("UPDATE "):
+        return None
+    s = re.sub(r"\s+", " ", stmt.strip())
+    m = re.match(r"UPDATE\s+([A-Za-z_][\w\.$]*)\s*(?:([A-Za-z_][\w]*))?\s+SET\s+(.*)$", s, flags=re.IGNORECASE)
+    if not m:
+        return None
+    table = m.group(1)
+    alias = m.group(2) or "t"
+    rest = m.group(3)
+    # Split SET list and optional WHERE
+    where_cond = None
+    if re.search(r"\bWHERE\b", rest, flags=re.IGNORECASE):
+        parts = re.split(r"\bWHERE\b", rest, flags=re.IGNORECASE)
+        set_blob = parts[0].strip()
+        where_cond = parts[1].strip()
+    else:
+        set_blob = rest.strip()
+    assigns = [x for x in _split_args(set_blob) if x.strip()]
+    set_map: dict[str, str] = {}
+    for a in assigns:
+        if "=" in a:
+            lhs, rhs = a.split("=", 1)
+            set_map[_strip_alias(lhs).strip()] = rhs.strip()
+    if not set_map:
+        return None
+    # Build SELECT projection
+    proj: List[str] = []
+    for c in columns:
+        expr = set_map.get(c, f"{alias}.{c}")
+        proj.append(f"{expr} AS {c}")
+    where_sql = f" WHERE NOT ({where_cond})" if where_cond else ""
+    updated_where = f" WHERE ({where_cond})" if where_cond else ""
+    # Compose final INSERT OVERWRITE using UNION ALL of updated + preserved
+    updated_sql = f"SELECT {', '.join(proj)} FROM {table} {alias}{updated_where}"
+    preserved_sql = f"SELECT {', '.join(f'{alias}.{c} AS {c}' for c in columns)} FROM {table} {alias}{where_sql}"
+    final_sql = (
+        f"INSERT OVERWRITE TABLE {table}\nSELECT * FROM (\n{updated_sql}\nUNION ALL\n{preserved_sql}\n) u"
+    )
+    return final_sql
