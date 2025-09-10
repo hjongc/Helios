@@ -8,6 +8,12 @@ try:
 except Exception:  # pragma: no cover
     OpenAI = None  # type: ignore
 
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except Exception:
+    pass
+
 
 class LLMUnavailable(Exception):
     """한국어 주석: LLM 호출 불가 시 사용."""
