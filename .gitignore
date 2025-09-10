@@ -55,3 +55,6 @@ GUIDELINES.md
 .cursorrules
 # Optional future local Cursor files/directories
 .cursor/
+
+# Ignore company examples (sensitive)
+examples/
